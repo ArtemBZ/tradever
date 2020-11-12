@@ -1,0 +1,5 @@
+PortfolioCurrencies(currencies=[
+PortfolioCurrency(currency=EUR, balance=0, blocked=null),
+PortfolioCurrency(currency=RUB, balance=0, blocked=null),
+PortfolioCurrency(currency=USD, balance=0, blocked=null)
+])

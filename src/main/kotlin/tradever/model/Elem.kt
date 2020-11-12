@@ -10,17 +10,17 @@ class Element(val currentPrice: Double, var name: String) {
         get() = false
 }
 
-enum class Currency(val title: String, val symbol: String) {
-    US_DOLLAR("us dollar", "$"),
-    CANADIAN_DOLLAR("canadian dollar", "$"),
-    RUB("Rubl", "p"); // ';' !!!
+enum class Currency(val code: String, val label: String) {
+    US_DOLLAR("USD", "$"),
+    EURO("EUR", "€"),
+    RUBLE("RUB", "₽"); // ';' !!!
 
-    fun getSupportedCurrencies() = US_DOLLAR.title + RUB.title
+    fun getSupportedCurrencies() = US_DOLLAR.code + RUBLE.code
 }
 
 fun getMinValue(currency: Currency) =
     // you can use set as well
     when (currency) {
-        RUB -> 10
-        US_DOLLAR, CANADIAN_DOLLAR -> 1
+        RUBLE -> 10
+        US_DOLLAR, EURO -> 1
     }

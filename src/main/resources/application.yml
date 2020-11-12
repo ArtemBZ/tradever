@@ -1,0 +1,5 @@
+ssoToken: ""
+tickers:
+  - "TSLA"
+  - "NFLX"
+sandboxMode: true

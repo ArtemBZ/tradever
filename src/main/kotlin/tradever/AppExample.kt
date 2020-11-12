@@ -1,12 +1,18 @@
 package tradever
 
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
+import com.fasterxml.jackson.module.kotlin.KotlinModule
 import org.reactivestreams.example.unicast.AsyncSubscriber
 import ru.tinkoff.invest.openapi.OpenApi
 import ru.tinkoff.invest.openapi.models.market.CandleInterval
+import ru.tinkoff.invest.openapi.models.portfolio.PortfolioCurrencies
 import ru.tinkoff.invest.openapi.models.streaming.StreamingEvent
+import ru.tinkoff.invest.openapi.models.streaming.StreamingRequest
 import ru.tinkoff.invest.openapi.okhttp.OkHttpOpenApiFactory
 import java.io.FileNotFoundException
 import java.io.IOException
+import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.util.concurrent.CompletableFuture
@@ -15,13 +21,11 @@ import java.util.concurrent.Executors
 import java.util.logging.Level
 import java.util.logging.LogManager
 import java.util.logging.Logger
-import kotlin.streams.toList
 
 /**
  * Copied from https://github.com/TinkoffCreditSystems/invest-openapi-java-sdk
  * converted to Kotlin, using Idea
  */
-
 object AppExample {
     @JvmStatic
     fun main(args: Array<String>) {
@@ -31,12 +35,7 @@ object AppExample {
             System.err.println("Failed to initialize log: " + ex.localizedMessage)
             return
         }
-        val parameters = try {
-            extractParams(args)
-        } catch (ex: IllegalArgumentException) {
-            logger.log(Level.SEVERE, "Failed to read config file", ex)
-            return
-        }
+        val parameters = TradingParameters.readConfigFile()
         val factory = OkHttpOpenApiFactory(parameters.ssoToken, logger)
         try {
             val api: OpenApi
@@ -47,38 +46,39 @@ object AppExample {
             } else {
                 api = factory.createOpenApiClient(Executors.newSingleThreadExecutor())
             }
-//            val listener = StreamingApiSubscriber(logger, Executors.newSingleThreadExecutor())
-//            api.streamingContext.eventPublisher.subscribe(listener)
+            val listener = StreamingApiSubscriber(logger, Executors.newSingleThreadExecutor())
+            api.streamingContext.eventPublisher.subscribe(listener)
 
-            val stocks = api.marketContext.marketStocks.get();
-            logger.info("Stocks $stocks")
-
-//            for (i in parameters.tickers.indices) {
-//                val ticker = parameters.tickers[i]
-//                val candleInterval = parameters.candleIntervals[i]
-//                logger.info("Find by ticker = $ticker... ")
-//                val instrumentsList = api.marketContext.searchMarketInstrumentsByTicker(ticker).join()
-//                val instrumentOpt = instrumentsList.instruments.stream().findFirst()
-//                val instrument = if (instrumentOpt.isEmpty) {
-//                    logger.severe("There is no instrument for ticker = $ticker")
-//                    return
-//                } else {
-//                    instrumentOpt.get()
-//                }
-//                logger.info("Getting portfolio currencies...")
-//                val portfolioCurrencies = api.portfolioContext.getPortfolioCurrencies(null).join()
-//                val portfolioCurrencyOpt = portfolioCurrencies.currencies.stream()
-//                    .filter { pc: PortfolioCurrency -> pc.currency == instrument.currency }
-//                    .findFirst()
-//                if (portfolioCurrencyOpt.isEmpty) {
-//                    logger.severe("There is no portfolio currency")
-//                    return
-//                } else {
-//                    val portfolioCurrency = portfolioCurrencyOpt.get()
-//                    logger.info("There are ${portfolioCurrency.currency} on ${portfolioCurrency.balance.toPlainString()}")
-//                }
-//                api.streamingContext.sendRequest(StreamingRequest.subscribeCandle(instrument.figi, candleInterval))
-//            }
+            for (i in parameters.tickers.indices) {
+                val ticker = parameters.tickers[i]
+                logger.info("Find by ticker = $ticker... ")
+                val instrumentsList = api.marketContext.searchMarketInstrumentsByTicker(ticker).join()
+                val instrumentOpt = instrumentsList.instruments.stream().findFirst()
+                val instrument = if (instrumentOpt.isEmpty) {
+                    logger.severe("There is no instrument for ticker = $ticker")
+                    return
+                } else {
+                    instrumentOpt.get()
+                }
+                logger.info("Getting portfolio currencies...")
+                val portfolioCurrencies = api.portfolioContext.getPortfolioCurrencies(null).join()
+                val portfolioCurrencyOpt = portfolioCurrencies.currencies.stream()
+                    .filter { pc: PortfolioCurrencies.PortfolioCurrency -> pc.currency == instrument.currency }
+                    .findFirst()
+                if (portfolioCurrencyOpt.isEmpty) {
+                    logger.severe("There is no portfolio currency")
+                    return
+                } else {
+                    val portfolioCurrency = portfolioCurrencyOpt.get()
+                    logger.info("There are ${portfolioCurrency.currency} on ${portfolioCurrency.balance.toPlainString()}")
+                }
+                api.streamingContext.sendRequest(
+                    StreamingRequest.subscribeCandle(
+                        instrument.figi,
+                        CandleInterval.ONE_MIN
+                    )
+                )
+            }
 
             initCleanupProcedure(api, logger)
             val result = CompletableFuture<Void>()
@@ -103,11 +103,6 @@ object AppExample {
         return Logger.getLogger(AppExample::class.java.name)
     }
 
-    // TODO: 02.11.2020 let's rather use config file
-    private fun extractParams(args: Array<String>) = TradingParameters.of(
-        "token",
-        "test", "1min", true)
-
     private fun initCleanupProcedure(api: OpenApi, logger: Logger) {
         Runtime.getRuntime().addShutdownHook(Thread {
             try {
@@ -121,37 +116,20 @@ object AppExample {
 }
 
 class TradingParameters(
-    val ssoToken: String, val tickers: Array<String>, val candleIntervals: Array<CandleInterval>,
-    val sandboxMode: Boolean
+    val ssoToken: String, val tickers: Array<String>, val sandboxMode: Boolean
 ) {
     companion object {
-        fun of(
-            ssoTokenArg: String,
-            tickersArg: String,
-            candleIntervalsArg: String,
-            sandboxModeArg: Boolean
-        ): TradingParameters {
-            val tickers = tickersArg.split(",").toTypedArray()
-            val candleIntervals = candleIntervalsArg.split(",").stream()
-                .map { str: String -> parseCandleInterval(str) }
-                // I bet you can do it better
-                .toList().toTypedArray()
-            require(candleIntervals.size == tickers.size) {
-                "Wrong number of candle intervals and/or tickers"
-            }
-            return TradingParameters(ssoTokenArg, tickers, candleIntervals, true)
+        private val mapper = let {
+            val mapper = ObjectMapper(YAMLFactory())
+            mapper.registerModule(KotlinModule())
+            mapper
         }
 
-        private fun parseCandleInterval(str: String): CandleInterval {
-            return when (str) {
-                "1min" -> CandleInterval.ONE_MIN
-                "2min" -> CandleInterval.TWO_MIN
-                "3min" -> CandleInterval.THREE_MIN
-                "5min" -> CandleInterval.FIVE_MIN
-                "10min" -> CandleInterval.TEN_MIN
-                else -> throw java.lang.IllegalArgumentException("Corrupted candle interval")
+        fun readConfigFile(): TradingParameters =
+            Files.newBufferedReader(FileSystems.getDefault().getPath("src/main/resources/application.yml")).use {
+                mapper.readValue(it, TradingParameters::class.java)
+
             }
-        }
     }
 }
 
@@ -161,5 +139,4 @@ class StreamingApiSubscriber(private val logger: Logger, executor: Executor) :
         logger.info("Got new event from Streaming API \n $element")
         return true
     }
-
 }
