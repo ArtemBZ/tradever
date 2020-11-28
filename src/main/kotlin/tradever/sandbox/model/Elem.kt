@@ -1,6 +1,6 @@
-package tradever.model
+package tradever.sandbox.model
 
-import tradever.model.Currency.*
+import tradever.sandbox.model.Currency.*
 
 // value object
 // public by default

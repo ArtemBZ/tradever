@@ -1,4 +1,4 @@
-package tradever.model
+package tradever.sandbox.model
 
 interface Exchange
 class ExchangeFakeImpl(val firms: Array<String>) : Exchange

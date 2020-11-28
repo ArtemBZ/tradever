@@ -1,5 +1,8 @@
-ssoToken: ""
-tickers:
-  - "TSLA"
-  - "NFLX"
 sandboxMode: true
+ssoToken: ""
+
+dealers:
+  prices:
+    pricesFile: "config/prices.yml"
+    currentDir: "current"
+    archiveDir: "archive"
