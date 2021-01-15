@@ -37,7 +37,7 @@ class PricesDealer(
     private val configPath: String,
     private val currentDir: String,
     private val archiveDir: String
-) {
+) : Dealer {
 
     companion object {
         private val mapper = let {
@@ -45,10 +45,10 @@ class PricesDealer(
             mapper.registerModule(KotlinModule())
             mapper
         }
-        val LOG: Logger = Logger.getLogger(PricesDealer.toString())
+        private val LOG: Logger = Logger.getLogger(PricesDealer.toString())
     }
 
-    fun run() {
+    override fun run() {
         for (property in readProperties()) {
             //TODO: run them in parallel
             try {
@@ -92,11 +92,11 @@ class PricesDealer(
             }
         val result = hashMapOf<String, Properties>()
         for (figiElem in props) {
-            result[figiElem.key] =
-                Properties(
-                    figiElem.value.getValue("buy").toDouble(), (figiElem.value.getValue("sell")).toDouble(),
-                    figiElem.value.getValue("name")
-                )
+            val properties =
+                Properties(figiElem.value.getValue("buy").toDouble(), figiElem.value.getValue("sell").toDouble())
+            properties.name = figiElem.value.getValue("name")
+
+            result[figiElem.key] = properties
         }
         return result
     }
@@ -148,7 +148,7 @@ class PricesDealer(
 
     private fun buy(figi: String, name: String, priceToBuy: Double, file: File): Pair<Step, File> {
         val listener = CandleSubscriber(LOG, Executors.newSingleThreadExecutor(), file,
-            action = { candle ->
+            { candle ->
                 if (candle.openPrice < BigDecimal.valueOf(priceToBuy)) {
                     file.appendText(
                         """Got price bellow target: $priceToBuy
@@ -171,24 +171,28 @@ class PricesDealer(
     }
 
     private fun waitWhenListenerCompleted(listener: CandleSubscriber, figi: String) {
-        api.streamingContext.eventPublisher.subscribe(listener)
-        api.streamingContext.sendRequest(
-            StreamingRequest.subscribeCandle(
-                figi,
-                CandleInterval.ONE_MIN
-            )
-        )
+        with(api.streamingContext) {
+            eventPublisher.subscribe(listener)
 
-        while (!listener.isCompleted) {
-            Thread.sleep(2000)
+            sendRequest(
+                StreamingRequest.subscribeCandle(
+                    figi,
+                    CandleInterval.ONE_MIN
+                )
+            )
+
+            while (!listener.isCompleted) {
+                Thread.sleep(2000)
+            }
+
+            sendRequest(
+                StreamingRequest.unsubscribeCandle(
+                    figi,
+                    CandleInterval.ONE_MIN
+                )
+            )
         }
 
-        api.streamingContext.sendRequest(
-            StreamingRequest.unsubscribeCandle(
-                figi,
-                CandleInterval.ONE_MIN
-            )
-        )
     }
 
     private fun buy(figi: String, name: String, file: File) {
@@ -197,16 +201,27 @@ class PricesDealer(
     }
 }
 
-private class Properties(val priceToBuy: Double, val priceToSell: Double, val name: String)
+private data class Properties(val priceToBuy: Double, val priceToSell: Double) {
+    // just to demonstrate
+    var name: String = "undefined"
+        get() = field
+        set(value) {
+            field = value
+        }
+
+    override fun toString(): String {
+        return super.toString()
+    }
+}
 
 private class CandleSubscriber(
     private val logger: Logger,
     executor: Executor,
     private val file: File,
-    var isCompleted: Boolean = false,
     private val action: (Candle) -> Boolean
-) :
-    AsyncSubscriber<StreamingEvent>(executor) {
+) : AsyncSubscriber<StreamingEvent>(executor) {
+    var isCompleted = false
+
     override fun whenNext(element: StreamingEvent?): Boolean {
         logger.info("Got new event from Streaming API \n $element")
         val candle = element as? Candle ?: return false

@@ -5,9 +5,8 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 import com.fasterxml.jackson.module.kotlin.KotlinModule
 import ru.tinkoff.invest.openapi.OpenApi
 import ru.tinkoff.invest.openapi.okhttp.OkHttpOpenApiFactory
-import tradever.dealer.PricesDealer
+import tradever.dealer.Dealer
 import java.io.FileNotFoundException
-import java.io.IOException
 import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Paths
@@ -22,53 +21,44 @@ import java.util.logging.Logger
 object App {
     @JvmStatic
     fun main(args: Array<String>) {
-        val logger = try {
-            initLogger(App::class.java.name)
-        } catch (ex: IOException) {
-            System.err.println("Failed to initialize log: " + ex.localizedMessage)
-            return
+        val logger = LoggerFactory.initLogger(App::class.java.name)
+        val config = AppConfiguration.readConfigFile()
+        val factory = OkHttpOpenApiFactory(config.ssoToken, logger)
+        val api: OpenApi
+        logger.info("Starting... ")
+        if (config.sandboxMode) {
+            api = factory.createSandboxOpenApiClient(Executors.newSingleThreadExecutor())
+            api.sandboxContext.performRegistration(null).join()
+        } else {
+            api = factory.createOpenApiClient(Executors.newSingleThreadExecutor())
         }
-        val parameters = TradingParameters.readConfigFile()
-        val factory = OkHttpOpenApiFactory(parameters.ssoToken, logger)
-        try {
-            val api: OpenApi
-            logger.info("Starting... ")
-            if (parameters.sandboxMode) {
-                api = factory.createSandboxOpenApiClient(Executors.newSingleThreadExecutor())
-                api.sandboxContext.performRegistration(null).join()
-            } else {
-                api = factory.createOpenApiClient(Executors.newSingleThreadExecutor())
-            }
 
-            initCleanupProcedure(api, logger)
-//            val result = CompletableFuture<Void>()
-//            result.join()
-            val pricesProperties = parameters.dealers.getValue("prices")
-            PricesDealer(
-                api,
-                pricesProperties.getValue("pricesFile"),
-                pricesProperties.getValue("currentDir"),
-                pricesProperties.getValue("archiveDir")
-            ).run()
-            api.close()
-        } catch (ex: Exception) {
-            logger.log(Level.SEVERE, "Oops, something wrong", ex)
+        initCleanupProcedure(api, logger)
+
+        val pricesProperties = config.dealers.getValue("prices")
+        Dealer.createPriceDealer(
+            api,
+            pricesProperties.getValue("pricesFile"),
+            pricesProperties.getValue("currentDir"),
+            pricesProperties.getValue("archiveDir")
+        ).run()
+        api.close()
+    }
+
+    object LoggerFactory {
+        fun initLogger(name: String): Logger {
+            val logManager = LogManager.getLogManager()
+            App::class.java.classLoader.getResourceAsStream("logging.properties").use { input ->
+                if (input == null) {
+                    throw FileNotFoundException()
+                }
+                Files.createDirectories(Paths.get("./logs"))
+                logManager.readConfiguration(input)
+            }
+            return Logger.getLogger(name)
         }
     }
 
-    @Throws(IOException::class)
-    fun initLogger(name: String): Logger {
-        val logManager = LogManager.getLogManager()
-        val classLoader = App::class.java.classLoader
-        classLoader.getResourceAsStream("logging.properties").use { input ->
-            if (input == null) {
-                throw FileNotFoundException()
-            }
-            Files.createDirectories(Paths.get("./logs"))
-            logManager.readConfiguration(input)
-        }
-        return Logger.getLogger(name)
-    }
 
     private fun initCleanupProcedure(api: OpenApi, logger: Logger) {
         Runtime.getRuntime().addShutdownHook(Thread {
@@ -82,9 +72,8 @@ object App {
     }
 }
 
-class TradingParameters(
+class AppConfiguration(
     val ssoToken: String,
-    val tickers: Array<String>,
     val sandboxMode: Boolean,
     val dealers: Map<String, Map<String, String>>
 ) {
@@ -95,9 +84,9 @@ class TradingParameters(
             mapper
         }
 
-        fun readConfigFile(): TradingParameters =
+        fun readConfigFile(): AppConfiguration =
             Files.newBufferedReader(FileSystems.getDefault().getPath("src/main/resources/application.yml")).use {
-                mapper.readValue(it, TradingParameters::class.java)
+                mapper.readValue(it, AppConfiguration::class.java)
             }
     }
 }
