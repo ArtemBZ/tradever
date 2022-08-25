@@ -11,5 +11,5 @@ interface Dealer {
             PricesDealer(api, configPath, currentDir, archiveDir)
     }
 
-    fun run()
+    suspend fun run()
 }

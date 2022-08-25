@@ -3,6 +3,8 @@ package tradever
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 import com.fasterxml.jackson.module.kotlin.KotlinModule
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import ru.tinkoff.invest.openapi.OpenApi
 import ru.tinkoff.invest.openapi.okhttp.OkHttpOpenApiFactory
 import tradever.dealer.Dealer
@@ -36,12 +38,18 @@ object App {
         initCleanupProcedure(api, logger)
 
         val pricesProperties = config.dealers.getValue("prices")
-        Dealer.createPriceDealer(
-            api,
-            pricesProperties.getValue("pricesFile"),
-            pricesProperties.getValue("currentDir"),
-            pricesProperties.getValue("archiveDir")
-        ).run()
+        runBlocking {
+            launch {
+                Dealer.createPriceDealer(
+                    api,
+                    pricesProperties.getValue("pricesFile"),
+                    pricesProperties.getValue("currentDir"),
+                    pricesProperties.getValue("archiveDir")
+                ).run()
+            }
+        }
+
+
         api.close()
     }
 

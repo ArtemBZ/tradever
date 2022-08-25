@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 import com.fasterxml.jackson.module.kotlin.KotlinModule
+import kotlinx.coroutines.*
 import org.reactivestreams.example.unicast.AsyncSubscriber
 import ru.tinkoff.invest.openapi.OpenApi
 import ru.tinkoff.invest.openapi.models.market.CandleInterval
@@ -24,12 +25,14 @@ import java.util.logging.Logger
 import java.util.stream.Collectors
 
 
-enum class Step {
+private enum class Step {
     NOT_STARTED, BUY, SELL, PROFIT
 }
 
+private val operationsInterval = CandleInterval.ONE_MIN
+
 /**
- * The simplest implementation of trader.
+ * The simplest implementation of dealer.
  * It acts according to config file that has self-described schema.
  */
 class PricesDealer(
@@ -48,29 +51,42 @@ class PricesDealer(
         private val LOG: Logger = Logger.getLogger(PricesDealer.toString())
     }
 
-    override fun run() {
-        for (property in readProperties()) {
-            //TODO: run them in parallel
-            try {
-                var step = getStep(property.value.name)
+    override suspend fun run() = coroutineScope {
+        for (tradeProperty in readTradeProperties()) {
+            launch {
+                try {
+                    var stepAndFile = getCurrentStep(tradeProperty.value.figi)
 
-                while (step.first != PROFIT) {
-                    step = when (step.first) {
-                        NOT_STARTED -> startDeal(property.value.name, step.second)
-                        BUY -> buy(property.key, property.value.name, property.value.priceToBuy, step.second)
-                        SELL -> sell(property.key, property.value.name, property.value.priceToSell, step.second)
-                        else -> throw java.lang.IllegalStateException("Undefined next step for $property.key")
+                    while (stepAndFile.first != PROFIT) {
+                        stepAndFile = when (stepAndFile.first) {
+                            NOT_STARTED -> startDeal(tradeProperty.value.figi, stepAndFile.second)
+                            BUY -> buy(
+                                tradeProperty.key,
+                                tradeProperty.value.figi,
+                                tradeProperty.value.priceToBuy,
+                                stepAndFile.second
+                            )
+
+                            SELL -> sell(
+                                tradeProperty.key,
+                                tradeProperty.value.figi,
+                                tradeProperty.value.priceToSell,
+                                stepAndFile.second
+                            )
+
+                            else -> throw java.lang.IllegalStateException("Undefined next step for $tradeProperty.key")
+                        }
                     }
+                    profit(tradeProperty.value.figi, stepAndFile.second)
+                } catch (e: Exception) {
+                    LOG.warning("Error occurred with deal for ${tradeProperty.key}: $e")
                 }
-                profit(property.value.name, step.second)
-            } catch (e: Exception) {
-                LOG.warning("Error occurred with deal for ${property.key}: $e")
             }
         }
         LOG.info("Run all")
     }
 
-    private fun getStep(figi: String): Pair<Step, File> {
+    private fun getCurrentStep(figi: String): Pair<Step, File> {
         val files =
             Files.find(Path.of(currentDir), 1, { path, _ -> path.toFile().name.startsWith("${figi}_") })
                 .collect(Collectors.toList())
@@ -85,16 +101,16 @@ class PricesDealer(
                 Path.of(currentDir, files[0].fileName.toString()).toFile()
     }
 
-    private fun readProperties(): Map<String, Properties> {
+    private fun readTradeProperties(): Map<String, TradeProperties> {
         val props: Map<String, Map<String, String>> =
             Files.newBufferedReader(FileSystems.getDefault().getPath(configPath)).use {
                 mapper.readValue(it, object : TypeReference<Map<String, Map<String, String>>>() {})
             }
-        val result = hashMapOf<String, Properties>()
+        val result = hashMapOf<String, TradeProperties>()
         for (figiElem in props) {
             val properties =
-                Properties(figiElem.value.getValue("buy").toDouble(), figiElem.value.getValue("sell").toDouble())
-            properties.name = figiElem.value.getValue("name")
+                TradeProperties(figiElem.value.getValue("buy").toDouble(), figiElem.value.getValue("sell").toDouble())
+            properties.figi = figiElem.value.getValue("name")
 
             result[figiElem.key] = properties
         }
@@ -112,7 +128,7 @@ class PricesDealer(
         file.appendText("Profit = TODO")
     }
 
-    private fun sell(figi: String, name: String, priceToSell: Double, file: File): Pair<Step, File> {
+    private suspend fun sell(figi: String, name: String, priceToSell: Double, file: File): Pair<Step, File> {
         val listener = CandleSubscriber(LOG, Executors.newSingleThreadExecutor(), file,
             action = { candle ->
                 if (candle.openPrice > BigDecimal.valueOf(priceToSell)) {
@@ -137,7 +153,9 @@ class PricesDealer(
                         LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME).replace(":", "_")
             )
                 .toFile()
-        Files.move(file.toPath(), profitFile.toPath())
+        withContext(Dispatchers.IO) {
+            Files.move(file.toPath(), profitFile.toPath())
+        }
         return PROFIT to profitFile
     }
 
@@ -146,49 +164,52 @@ class PricesDealer(
         file.appendText("Sold with TODO price \n")
     }
 
-    private fun buy(figi: String, name: String, priceToBuy: Double, file: File): Pair<Step, File> {
-        val listener = CandleSubscriber(LOG, Executors.newSingleThreadExecutor(), file,
-            { candle ->
-                if (candle.openPrice < BigDecimal.valueOf(priceToBuy)) {
-                    file.appendText(
-                        """Got price bellow target: $priceToBuy
+    private suspend fun buy(figi: String, name: String, priceToBuy: Double, file: File): Pair<Step, File> {
+        val listener = CandleSubscriber(
+            LOG, Executors.newSingleThreadExecutor(), file
+        ) { candle ->
+            if (candle.openPrice < BigDecimal.valueOf(priceToBuy)) {
+                file.appendText(
+                    """Got price bellow target: $priceToBuy
                     |""".trimMargin()
-                    )
-                    LOG.info("It's time to buy $name, current price = ${candle.openPrice}; target = $priceToBuy")
-                    false
-                } else {
-                    true
-                }
-            })
+                )
+                LOG.info("It's time to buy $name, current price = ${candle.openPrice}; target = $priceToBuy")
+                false
+            } else {
+                true
+            }
+        }
 
         waitWhenListenerCompleted(listener, figi)
 
         buy(figi, name, file)
 
-        val sellFIle = Path.of(currentDir, "${name}_${SELL}").toFile()
-        Files.move(file.toPath(), sellFIle.toPath())
-        return SELL to sellFIle
+        val sellFile = Path.of(currentDir, "${name}_${SELL}").toFile()
+        withContext(Dispatchers.IO) {
+            Files.move(file.toPath(), sellFile.toPath())
+        }
+        return SELL to sellFile
     }
 
-    private fun waitWhenListenerCompleted(listener: CandleSubscriber, figi: String) {
+    private suspend fun waitWhenListenerCompleted(listener: CandleSubscriber, figi: String) {
         with(api.streamingContext) {
             eventPublisher.subscribe(listener)
 
             sendRequest(
                 StreamingRequest.subscribeCandle(
                     figi,
-                    CandleInterval.ONE_MIN
+                    operationsInterval
                 )
             )
 
             while (!listener.isCompleted) {
-                Thread.sleep(2000)
+                delay(2000)
             }
 
             sendRequest(
                 StreamingRequest.unsubscribeCandle(
                     figi,
-                    CandleInterval.ONE_MIN
+                    operationsInterval
                 )
             )
         }
@@ -201,9 +222,9 @@ class PricesDealer(
     }
 }
 
-private data class Properties(val priceToBuy: Double, val priceToSell: Double) {
+private data class TradeProperties(val priceToBuy: Double, val priceToSell: Double) {
     // just to demonstrate
-    var name: String = "undefined"
+    var figi: String = "undefined"
         get() = field
         set(value) {
             field = value
